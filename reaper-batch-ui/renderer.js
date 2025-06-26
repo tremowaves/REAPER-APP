@@ -4,6 +4,8 @@ const path = require('path');
 let scannedFiles = [];
 let selectedFolderPath = '';
 let availablePresets = [];
+let fxChainFolderPath = 'H:/REAPER-APP/Fxchain';
+let fxChainPresets = [];
 
 // Event listeners
 document.getElementById('loadPresetsBtn').addEventListener('click', () => {
@@ -66,6 +68,7 @@ document.addEventListener('click', (e) => {
 // Handle keyword input changes
 document.addEventListener('input', (e) => {
   if (e.target.classList.contains('keyword')) {
+    autoSelectPresetForKeyword(e.target);
     updateFilePreview();
   }
 });
@@ -110,19 +113,32 @@ ipcRenderer.on('selected-folder', (event, path) => {
 
 ipcRenderer.on('scanned-files', (event, files) => {
   scannedFiles = files;
+  document.getElementById('status').textContent = `Scan complete. Found ${files.length} audio files.`;
   updateFilePreview();
+});
+
+ipcRenderer.on('process-update', (event, message) => {
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = message;
 });
 
 ipcRenderer.on('process-done', (event, result) => {
   document.getElementById('status').textContent = result;
 });
 
+ipcRenderer.on('fxchain-presets-loaded', (event, { folder, presets }) => {
+  fxChainFolderPath = folder;
+  fxChainPresets = presets;
+  document.getElementById('fxChainFolderPath').textContent = folder;
+  updateAllPresetDropdowns();
+});
+
 // Helper functions
 function generatePresetOptions() {
-  if (availablePresets.length === 0) {
-    return '<option value="">Load presets from .rpp first</option>';
+  if (fxChainPresets.length === 0) {
+    return '<option value="">No FX Chain found. Please select folder.</option>';
   }
-  return availablePresets.map(p => `<option value="${p.path}">${p.name}</option>`).join('');
+  return fxChainPresets.map(p => `<option value="${p.path}">${p.name}</option>`).join('');
 }
 
 function updateAllPresetDropdowns() {
@@ -207,4 +223,30 @@ function updateFilePreview() {
   });
   
   fileListDiv.innerHTML = html;
+}
+
+// Di chuyển phần chọn FX Chain folder lên trên, ngay sau chọn REAPER app
+const reaperConfigDiv = document.getElementById('reaperPathBtn').parentElement.parentElement;
+const fxChainFolderDiv = document.createElement('div');
+fxChainFolderDiv.innerHTML = `
+  <label>2. FX Chain Folder: </label>
+  <button id="fxChainFolderBtn">Choose FX Chain Folder</button>
+  <span id="fxChainFolderPath">${fxChainFolderPath}</span>
+`;
+reaperConfigDiv.parentElement.insertBefore(fxChainFolderDiv, reaperConfigDiv.nextSibling);
+
+document.getElementById('fxChainFolderBtn').addEventListener('click', () => {
+  ipcRenderer.send('open-fxchain-folder-dialog');
+});
+
+// Khi nhập keyword, nếu có preset trùng tên, tự động chọn preset đó
+function autoSelectPresetForKeyword(inputEl) {
+  const keyword = inputEl.value.trim().toLowerCase();
+  const ruleDiv = inputEl.parentElement;
+  const presetSelect = ruleDiv.querySelector('select.preset');
+  if (!presetSelect) return;
+  const found = fxChainPresets.find(p => p.name.toLowerCase() === keyword);
+  if (found) {
+    presetSelect.value = found.path;
+  }
 } 

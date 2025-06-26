@@ -1,13 +1,14 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const Store = require('electron-store');
 
 const store = new Store();
 let mainWindow;
 let reaperPath = '';
 let availablePresets = [];
+const defaultFxChainFolder = 'H:/REAPER-APP/Fxchain';
 
 async function clearTempPresets() {
   const tempDir = path.join(app.getPath('userData'), 'temp-presets');
@@ -57,10 +58,14 @@ function createWindow() {
 app.whenReady().then(async () => {
   await clearTempPresets();
   createWindow();
-  // Try to find REAPER automatically
   reaperPath = await findReaperPath();
   if (reaperPath) {
     console.log('Found REAPER at:', reaperPath);
+  }
+  // Quét FX Chain mặc định
+  const presets = await scanFxChainFolder(defaultFxChainFolder);
+  if (mainWindow) {
+    mainWindow.webContents.send('fxchain-presets-loaded', { folder: defaultFxChainFolder, presets });
   }
 });
 
@@ -129,10 +134,22 @@ ipcMain.on('process-audio-smart', async (event, config) => {
     if (!reaperPath) {
       throw new Error('REAPER path not set. Please select REAPER executable first.');
     }
-    await processAudioFilesSmart(config);
-    mainWindow.webContents.send('process-done', 'Processing complete!');
+    await processAudioFiles(config, event);
   } catch (error) {
     mainWindow.webContents.send('process-done', `Error: ${error.message}`);
+  }
+});
+
+// IPC chọn thư mục FX Chain
+ipcMain.on('open-fxchain-folder-dialog', async (event) => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Select FX Chain Folder'
+  });
+  if (!result.canceled && result.filePaths.length > 0) {
+    const folder = result.filePaths[0];
+    const presets = await scanFxChainFolder(folder);
+    mainWindow.webContents.send('fxchain-presets-loaded', { folder, presets });
   }
 });
 
@@ -232,19 +249,20 @@ async function parseRppForPresets(filePath) {
         continue;
       }
 
-      // Convert the <FXCHAIN> block from the .rpp file into a valid
       // <REAPER_FXCHAIN> format that can be read by the batch converter.
-      fxChainContent = fxChainContent.replace('<FXCHAIN', '<REAPER_FXCHAIN');
+      // We need to build a complete, valid RfxChain file, not just the content.
+      const rfxChainHeader = '<REAPER_FXCHAIN_PROJ 0 ""';
+      let rfxChainContent = fxChainContent.replace('<FXCHAIN', rfxChainHeader);
 
       const safeFileName = trackName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
       const tempFilePath = path.join(tempDir, `${safeFileName}.RfxChain`);
       
       // --- Start Enhanced Logging ---
       console.log(`[INFO] Writing temporary preset file for "${trackName}" to: ${tempFilePath}`);
-      console.log(`[INFO] Content of RfxChain file:\n---\n${fxChainContent}\n---`);
+      console.log(`[INFO] Content of RfxChain file:\n---\n${rfxChainContent}\n---`);
       // --- End Enhanced Logging ---
 
-      await fs.writeFile(tempFilePath, fxChainContent);
+      await fs.writeFile(tempFilePath, rfxChainContent);
       presets.push({ name: trackName, path: tempFilePath });
     }
   }
@@ -291,150 +309,143 @@ async function scanAudioFiles(folderPath) {
   return allFiles.sort();
 }
 
-async function processAudioFilesSmart(config) {
+// This function replaces the old processAudioFilesSmart and processFileGroup
+async function processAudioFiles(config, event) {
   const { folderPath, files, rules, outputSettings } = config;
-  const baseOutputDir = path.join(folderPath, 'processed');
 
-  // Create a map to hold file groups
-  const fileGroups = new Map();
-  const unmatchedFiles = [];
-  
-  files.forEach(file => {
-    const fileName = path.basename(file).toLowerCase();
-    let matchedRule = null;
-    
-    // Find matching rule
-    for (const rule of rules) {
-      if (rule.keyword && fileName.includes(rule.keyword)) {
-        matchedRule = rule;
-        break;
-      }
-    }
-    
-    if (matchedRule) {
-      const keyword = matchedRule.keyword;
-      if (!fileGroups.has(keyword)) {
-        fileGroups.set(keyword, {
-          preset: matchedRule.preset,
-          files: []
-        });
-      }
-      fileGroups.get(keyword).files.push(file);
-    } else {
-      unmatchedFiles.push(file);
-    }
-  });
+  try {
+    // 1. Group files and handle unmatched
+    const baseOutputDir = path.join(folderPath, 'processed');
+    const unmatchedDir = path.join(baseOutputDir, '_unmatched');
+    await fs.mkdir(unmatchedDir, { recursive: true });
 
-  // Move unmatched files
-  for (const file of unmatchedFiles) {
-    const destPath = path.join(baseOutputDir, '_unmatched', path.basename(file));
-    try {
-      await fs.rename(file, destPath);
-    } catch (err) {
-      console.error(`Failed to move unmatched file ${file}:`, err);
-    }
-  }
-  
-  // Process each matched group with its preset
-  for (const [keyword, group] of fileGroups) {
-    const outputDirName = keyword.charAt(0).toUpperCase() + keyword.slice(1);
-    const ruleOutputDir = path.join(baseOutputDir, outputDirName);
+    const fileGroups = new Map();
+    const unmatchedFiles = [];
     
-    await processFileGroup(group.files, group.preset, outputSettings, ruleOutputDir);
+    for (const file of files) {
+        const fileName = path.basename(file).toLowerCase();
+        const matchedRule = rules.find(r => r.keyword && fileName.includes(r.keyword));
+
+        if (matchedRule) {
+            const keyword = matchedRule.keyword;
+            if (!fileGroups.has(keyword)) {
+                fileGroups.set(keyword, {
+                    preset: matchedRule.preset,
+                    files: []
+                });
+            }
+            fileGroups.get(keyword).files.push(file);
+        } else {
+            unmatchedFiles.push(file);
+        }
+    }
+
+    for (const file of unmatchedFiles) {
+        const destPath = path.join(unmatchedDir, path.basename(file));
+        await fs.rename(file, destPath).catch(err => console.error(`Failed to move unmatched file: ${err}`));
+    }
+
+    if (fileGroups.size === 0) {
+      event.sender.send('process-done', 'No files matched the rules. Unmatched files were moved.');
+      return;
+    }
+    
+    // 2. Create a single config file for all groups
+    let configContent = '';
+    for (const [keyword, group] of fileGroups) {
+        if (group.files.length === 0) continue;
+
+        const ruleOutputDir = path.join(baseOutputDir, keyword);
+        await fs.mkdir(ruleOutputDir, { recursive: true });
+        
+        // Add file list for this group first
+        for (const file of group.files) {
+            configContent += `${file}\n`;
+        }
+        configContent += '\n'; // Separator
+
+        // Then add the CONFIG block for this group
+        configContent += '<CONFIG\n';
+        configContent += `FXCHAIN "${group.preset}"\n`;
+        configContent += `OUTPATH "${ruleOutputDir}"\n`;
+        if (outputSettings.format === 'mp3') configContent += 'OUTFORMAT MP3\n';
+        else if (outputSettings.format === 'ogg') configContent += 'OUTFORMAT OGG\n';
+        else configContent += 'OUTFORMAT WAV\n';
+        if (outputSettings.normalize) {
+            configContent += `NORMALIZE 1\n`;
+            configContent += `NORMALIZETO ${outputSettings.peakDb}\n`;
+        }
+        if (outputSettings.autoFade) {
+            configContent += 'FADEIN 0.1\n';
+            configContent += 'FADEOUT 0.1\n';
+        }
+        configContent += '>\n\n'; // End block and add space for next group
+    }
+
+    const tempDir = path.join(app.getPath('userData'), 'temp-process-configs');
+    await fs.mkdir(tempDir, { recursive: true });
+    const tempConfigPath = path.join(tempDir, `process_config_${Date.now()}.txt`);
+    await fs.writeFile(tempConfigPath, configContent, 'utf-8');
+
+    console.log('REAPER Config Content:', configContent);
+
+    // 3. Execute REAPER using spawn for better feedback
+    const reaperProcess = spawn(`"${reaperPath}"`, ['-new', '-batchconvert', `"${tempConfigPath}"`], { shell: true });
+
+    let stdoutData = '';
+    let stderrData = '';
+
+    reaperProcess.stdout.on('data', (data) => {
+      stdoutData += data.toString();
+      console.log(`REAPER stdout: ${data}`);
+      mainWindow.webContents.send('process-update', `LOG: ${data}`);
+    });
+
+    reaperProcess.stderr.on('data', (data) => {
+      stderrData += data.toString();
+      console.error(`REAPER stderr: ${data}`);
+      mainWindow.webContents.send('process-update', `ERROR: ${data}`);
+    });
+
+    reaperProcess.on('close', async (code) => {
+      console.log(`REAPER process exited with code ${code}`);
+      
+      const reaperLogPath = tempConfigPath + '.log';
+      let reaperLogContent = '';
+      try {
+        reaperLogContent = await fs.readFile(reaperLogPath, 'utf-8');
+        console.log('--- REAPER Internal Log ---\n', reaperLogContent);
+      } catch (err) {
+        reaperLogContent = 'Could not read REAPER log file.';
+        console.error(reaperLogContent, err);
+      }
+
+      // Cleanup temp files
+      await fs.unlink(tempConfigPath).catch(err => console.error('Failed to delete temp config file:', err));
+      await fs.unlink(reaperLogPath).catch(err => console.error('Failed to delete REAPER log file:', err));
+
+      if (code === 0 && stderrData.trim() === '') {
+        event.sender.send('process-done', `Processing seemingly successful. REAPER Log:\n${reaperLogContent}`);
+      } else {
+        event.sender.send('process-done', `Processing failed. Errors:\n${stderrData}\n\nREAPER Log:\n${reaperLogContent}`);
+      }
+    });
+
+  } catch (error) {
+    console.error('Error in processAudioFiles:', error);
+    event.sender.send('process-done', `Fatal Error: ${error.message}`);
   }
 }
 
-async function processFileGroup(files, preset, outputSettings, outputDir) {
-  const tempDir = path.join(app.getPath('userData'), 'temp-process-configs');
-  await fs.mkdir(tempDir, { recursive: true });
-  const processFilePath = path.join(tempDir, `process_config_${Date.now()}.txt`);
-
-  // --- Start Enhanced Logging ---
-  console.log(`--- [GROUP PROCESSING] ---`);
-  console.log(`Output directory for this group: ${outputDir}`);
-  console.log(`Applying preset (FX Chain): ${preset}`);
-  console.log(`Files found for this group: (${files.length})`, files);
-
-  if (files.length === 0) {
-    console.log(`[INFO] Skipping this group because it contains no files.`);
-    return;
-  }
-  // --- End Enhanced Logging ---
-
+// Hàm quét tất cả file .RfxChain trong thư mục
+async function scanFxChainFolder(folder) {
   try {
-    // Reverting to the official REAPER batch file format based on developer documentation.
-    // The file list must come BEFORE the <CONFIG> block.
-    let processContent = '';
-
-    // Add file list immediately
-    for (const file of files) {
-      processContent += `"${file}"\n`;
-    }
-
-    // Add a newline for separation
-    processContent += '\n';
-
-    // Add the CONFIG block after the file list
-    processContent += '<CONFIG\n';
-    processContent += `FXCHAIN "${preset}"\n`;
-    processContent += `OUTPATH "${outputDir}"\n`;
-
-    // Add output format settings
-    if (outputSettings.format === 'mp3') {
-      processContent += 'OUTFORMAT MP3\n';
-    } else if (outputSettings.format === 'ogg') {
-      processContent += 'OUTFORMAT OGG\n';
-    } else {
-      processContent += 'OUTFORMAT WAV\n';
-    }
-
-    // Add normalization settings
-    if (outputSettings.normalize) {
-      processContent += `NORMALIZE 1\n`;
-      processContent += `NORMALIZETO ${outputSettings.peakDb}\n`;
-    }
-
-    // Add fade settings
-    if (outputSettings.autoFade) {
-      processContent += 'FADEIN 0.1\n';
-      processContent += 'FADEOUT 0.1\n';
-    }
-
-    processContent += '>\n'; // End of the config block
-
-    // Log the final content before writing and executing
-    console.log(`[INFO] Generating REAPER config file at: ${processFilePath}`);
-    console.log(`[INFO] Content for REAPER:\n---\n${processContent}\n---`);
-
-    // Write process file
-    await fs.writeFile(processFilePath, processContent);
-
-    // Execute REAPER command with full path, adding the -new flag as a last resort.
-    const reaperCmd = `"${reaperPath}" -new -batchconvert "${processFilePath}"`;
-
-    await new Promise((resolve, reject) => {
-      exec(reaperCmd, (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error(`REAPER execution failed: ${error.message}\n\nDetails:\n${stderr}`));
-          return;
-        }
-        if (stderr) {
-          console.warn(`REAPER process warning (stderr): ${stderr}`);
-          // Treat warnings as errors to be safe, as they often indicate a silent failure.
-          reject(new Error(`REAPER process finished with warnings. This usually means no files were processed. Please check your REAPER project and paths.\n\nDetails:\n${stderr}`));
-          return;
-        }
-        resolve(stdout);
-      });
-    });
-
-  } finally {
-    // Clean up temporary process file
-    try {
-      await fs.unlink(processFilePath);
-    } catch (err) {
-      console.error('Error cleaning up process file:', err);
-    }
+    const entries = await fs.readdir(folder, { withFileTypes: true });
+    const presets = entries.filter(e => e.isFile() && e.name.toLowerCase().endsWith('.rfxchain'))
+      .map(e => ({ name: path.basename(e.name, '.RfxChain'), path: path.join(folder, e.name) }));
+    return presets;
+  } catch (err) {
+    return [];
   }
 }
 
