@@ -189,14 +189,23 @@ async function parseRppForPresets(filePath) {
   const trackChunks = fileContent.split('<TRACK');
   trackChunks.shift(); // Remove content before the first track
 
+  let trackIndex = 0;
   for (const chunk of trackChunks) {
-    const nameMatch = chunk.match(/^\s*NAME\s+"([^"]+)"/m);
+    trackIndex++;
     
     const fxChainStartIndex = chunk.indexOf('<FXCHAIN');
-    if (!nameMatch || fxChainStartIndex === -1) {
+    if (fxChainStartIndex === -1) {
       continue;
     }
 
+    let trackName;
+    const nameMatch = chunk.match(/^\s*NAME\s+"([^"]+)"/m);
+    if (nameMatch && nameMatch[1].trim() !== "") {
+      trackName = nameMatch[1];
+    } else {
+      trackName = `Track ${trackIndex}`;
+    }
+    
     const fxChainChunk = chunk.substring(fxChainStartIndex);
     let openBrackets = 0;
     let fxChainEndIndex = -1;
@@ -214,7 +223,6 @@ async function parseRppForPresets(filePath) {
     }
 
     if (fxChainEndIndex !== -1) {
-      const trackName = nameMatch[1];
       const fxChainContent = fxChainChunk.substring(0, fxChainEndIndex + 1);
       
       // Only include presets that actually have plugins in them
