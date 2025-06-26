@@ -223,7 +223,7 @@ async function parseRppForPresets(filePath) {
     }
 
     if (fxChainEndIndex !== -1) {
-      const fxChainContent = fxChainChunk.substring(0, fxChainEndIndex + 1);
+      let fxChainContent = fxChainChunk.substring(0, fxChainEndIndex + 1);
       
       // Only include presets that actually have plugins in them
       // Updated to detect VST, AU, and JS plugins as well as native FX
@@ -232,9 +232,18 @@ async function parseRppForPresets(filePath) {
         continue;
       }
 
+      // Convert the <FXCHAIN> block from the .rpp file into a valid
+      // <REAPER_FXCHAIN> format that can be read by the batch converter.
+      fxChainContent = fxChainContent.replace('<FXCHAIN', '<REAPER_FXCHAIN');
+
       const safeFileName = trackName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
       const tempFilePath = path.join(tempDir, `${safeFileName}.RfxChain`);
       
+      // --- Start Enhanced Logging ---
+      console.log(`[INFO] Writing temporary preset file for "${trackName}" to: ${tempFilePath}`);
+      console.log(`[INFO] Content of RfxChain file:\n---\n${fxChainContent}\n---`);
+      // --- End Enhanced Logging ---
+
       await fs.writeFile(tempFilePath, fxChainContent);
       presets.push({ name: trackName, path: tempFilePath });
     }
@@ -249,9 +258,9 @@ async function parseRppForPresets(filePath) {
 
 async function scanAudioFiles(folderPath) {
   const audioExtensions = ['.wav', '.mp3', '.flac', '.aiff', '.ogg', '.m4a'];
-  const files = [];
-  
+
   async function scanDirectory(dir) {
+    let files = []; // Initialize files array for the current scope
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
       
@@ -259,11 +268,12 @@ async function scanAudioFiles(folderPath) {
         const fullPath = path.join(dir, entry.name);
         
         if (entry.isDirectory()) {
-          // Exclude the output directory to prevent re-processing
           if (entry.name === 'processed') {
             continue;
           }
-          await scanDirectory(fullPath); // Recursive scan
+          // Get files from the recursive call and add them to the current list
+          const subDirFiles = await scanDirectory(fullPath);
+          files = files.concat(subDirFiles);
         } else if (entry.isFile()) {
           const ext = path.extname(entry.name).toLowerCase();
           if (audioExtensions.includes(ext)) {
@@ -274,21 +284,19 @@ async function scanAudioFiles(folderPath) {
     } catch (error) {
       console.error(`Error scanning directory ${dir}:`, error);
     }
+    return files; // Return the files found in this directory and its children
   }
   
-  await scanDirectory(folderPath);
-  return files.sort();
+  const allFiles = await scanDirectory(folderPath);
+  return allFiles.sort();
 }
 
 async function processAudioFilesSmart(config) {
   const { folderPath, files, rules, outputSettings } = config;
+  const baseOutputDir = path.join(folderPath, 'processed');
 
-  const baseOutputDir = path.join(path.dirname(folderPath), 'processed');
-  const unmatchedDir = path.join(baseOutputDir, '_unmatched');
-  await fs.mkdir(unmatchedDir, { recursive: true });
-  
-  // Group files by rule keyword.
-  const fileGroups = {};
+  // Create a map to hold file groups
+  const fileGroups = new Map();
   const unmatchedFiles = [];
   
   files.forEach(file => {
@@ -305,13 +313,13 @@ async function processAudioFilesSmart(config) {
     
     if (matchedRule) {
       const keyword = matchedRule.keyword;
-      if (!fileGroups[keyword]) {
-        fileGroups[keyword] = {
+      if (!fileGroups.has(keyword)) {
+        fileGroups.set(keyword, {
           preset: matchedRule.preset,
           files: []
-        };
+        });
       }
-      fileGroups[keyword].files.push(file);
+      fileGroups.get(keyword).files.push(file);
     } else {
       unmatchedFiles.push(file);
     }
@@ -319,7 +327,7 @@ async function processAudioFilesSmart(config) {
 
   // Move unmatched files
   for (const file of unmatchedFiles) {
-    const destPath = path.join(unmatchedDir, path.basename(file));
+    const destPath = path.join(baseOutputDir, '_unmatched', path.basename(file));
     try {
       await fs.rename(file, destPath);
     } catch (err) {
@@ -328,7 +336,7 @@ async function processAudioFilesSmart(config) {
   }
   
   // Process each matched group with its preset
-  for (const [keyword, group] of Object.entries(fileGroups)) {
+  for (const [keyword, group] of fileGroups) {
     const outputDirName = keyword.charAt(0).toUpperCase() + keyword.slice(1);
     const ruleOutputDir = path.join(baseOutputDir, outputDirName);
     
@@ -337,16 +345,36 @@ async function processAudioFilesSmart(config) {
 }
 
 async function processFileGroup(files, preset, outputSettings, outputDir) {
-  const processFilePath = path.join(app.getPath('temp'), `process_config_${Date.now()}.txt`);
+  const tempDir = path.join(app.getPath('userData'), 'temp-process-configs');
+  await fs.mkdir(tempDir, { recursive: true });
+  const processFilePath = path.join(tempDir, `process_config_${Date.now()}.txt`);
+
+  // --- Start Enhanced Logging ---
+  console.log(`--- [GROUP PROCESSING] ---`);
+  console.log(`Output directory for this group: ${outputDir}`);
+  console.log(`Applying preset (FX Chain): ${preset}`);
+  console.log(`Files found for this group: (${files.length})`, files);
+
+  if (files.length === 0) {
+    console.log(`[INFO] Skipping this group because it contains no files.`);
+    return;
+  }
+  // --- End Enhanced Logging ---
 
   try {
+    // Reverting to the official REAPER batch file format based on developer documentation.
+    // The file list must come BEFORE the <CONFIG> block.
     let processContent = '';
-    // Add file list
+
+    // Add file list immediately
     for (const file of files) {
       processContent += `"${file}"\n`;
     }
 
-    // Add REAPER command block
+    // Add a newline for separation
+    processContent += '\n';
+
+    // Add the CONFIG block after the file list
     processContent += '<CONFIG\n';
     processContent += `FXCHAIN "${preset}"\n`;
     processContent += `OUTPATH "${outputDir}"\n`;
@@ -366,24 +394,34 @@ async function processFileGroup(files, preset, outputSettings, outputDir) {
       processContent += `NORMALIZETO ${outputSettings.peakDb}\n`;
     }
 
-    // Add fade settings (if supported by REAPER)
+    // Add fade settings
     if (outputSettings.autoFade) {
       processContent += 'FADEIN 0.1\n';
       processContent += 'FADEOUT 0.1\n';
     }
 
-    processContent += '>\n';
+    processContent += '>\n'; // End of the config block
+
+    // Log the final content before writing and executing
+    console.log(`[INFO] Generating REAPER config file at: ${processFilePath}`);
+    console.log(`[INFO] Content for REAPER:\n---\n${processContent}\n---`);
 
     // Write process file
     await fs.writeFile(processFilePath, processContent);
 
-    // Execute REAPER command with full path
-    const reaperCmd = `"${reaperPath}" -batchconvert "${processFilePath}"`;
+    // Execute REAPER command with full path, adding the -new flag as a last resort.
+    const reaperCmd = `"${reaperPath}" -new -batchconvert "${processFilePath}"`;
 
     await new Promise((resolve, reject) => {
       exec(reaperCmd, (error, stdout, stderr) => {
         if (error) {
-          reject(error);
+          reject(new Error(`REAPER execution failed: ${error.message}\n\nDetails:\n${stderr}`));
+          return;
+        }
+        if (stderr) {
+          console.warn(`REAPER process warning (stderr): ${stderr}`);
+          // Treat warnings as errors to be safe, as they often indicate a silent failure.
+          reject(new Error(`REAPER process finished with warnings. This usually means no files were processed. Please check your REAPER project and paths.\n\nDetails:\n${stderr}`));
           return;
         }
         resolve(stdout);
