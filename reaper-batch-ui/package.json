@@ -1,0 +1,18 @@
+{
+  "name": "reaper-batch-fx-ui",
+  "version": "1.0.0",
+  "description": "REAPER Batch FX Processor with Auto Preset Selection",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --inspect=9222"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0"
+  },
+  "devDependencies": {
+    "electron": "latest"
+  },
+  "author": "Your Name",
+  "license": "MIT"
+} 

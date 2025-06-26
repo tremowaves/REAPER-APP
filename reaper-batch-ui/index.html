@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>REAPER Batch FX UI - Auto Preset Selector</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .section { margin: 15px 0; padding: 10px; border: 1px solid #ccc; }
+        .preset-mapping { background-color: #f5f5f5; }
+        button { padding: 8px 16px; margin: 5px; }
+        input, select { padding: 5px; margin: 5px; }
+        #fileList { max-height: 200px; overflow-y: scroll; border: 1px solid #ddd; padding: 10px; }
+        .file-item { margin: 5px 0; padding: 5px; background: #f9f9f9; }
+        .preset-match { color: #007acc; font-weight: bold; }
+        .reaper-section { background-color: #e8f4f8; }
+        .status-ok { color: #28a745; }
+        .status-error { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <h2>REAPER Batch FX Processor - Auto Preset Selector</h2>
+
+    <div class="section">
+        <h3>1. Load Presets from REAPER Project</h3>
+        <button id="loadPresetsBtn">Load from .rpp File</button>
+        <span id="presetsStatus"></span>
+    </div>
+    
+    <div class="section reaper-section">
+        <h3>2. REAPER Configuration</h3>
+        <label for="reaperPath">REAPER Executable:</label>
+        <button id="reaperPathBtn">Select REAPER</button>
+        <span id="reaperPathDisplay">No REAPER selected</span>
+        <div id="reaperStatus"></div>
+    </div>
+
+    <div class="section">
+        <label for="audioFolder">3. Audio Folder:</label>
+        <button id="audioFolderBtn">Choose Folder</button>
+        <span id="audioFolderPath">No folder selected</span>
+    </div>
+
+    <div class="section preset-mapping">
+        <h3>Preset Mapping Rules</h3>
+        <div id="presetRules">
+            <div class="rule-item">
+                <label>Files containing:</label>
+                <input type="text" class="keyword" value="ui" placeholder="keyword">
+                <label>use preset:</label>
+                <select class="preset">
+                    <option value="UI.RfxChain">UI Chain</option>
+                    <option value="MyEQChain.RfxChain">EQ Chain</option>
+                    <option value="Compressor.RfxChain">Compressor</option>
+                </select>
+                <button class="remove-rule">Remove</button>
+            </div>
+            <div class="rule-item">
+                <label>Files containing:</label>
+                <input type="text" class="keyword" value="ambient" placeholder="keyword">
+                <label>use preset:</label>
+                <select class="preset">
+                    <option value="Ambient.RfxChain">Ambient Chain</option>
+                    <option value="MyEQChain.RfxChain">EQ Chain</option>
+                    <option value="Compressor.RfxChain">Compressor</option>
+                </select>
+                <button class="remove-rule">Remove</button>
+            </div>
+        </div>
+        <button id="addRuleBtn">Add New Rule</button>
+    </div>
+
+    <div class="section">
+        <h3>Output Settings</h3>
+        <label for="outputFormat">Output Format:</label>
+        <select id="outputFormat">
+            <option value="mp3">MP3</option>
+            <option value="ogg">OGG</option>
+            <option value="wav">WAV</option>
+        </select>
+        
+        <label for="autoFade">Auto Fade In/Out:</label>
+        <input type="checkbox" id="autoFade">
+        
+        <label for="normalize">Normalize:</label>
+        <input type="checkbox" id="normalize">
+        
+        <label for="peakDb">Peak dB:</label>
+        <input type="number" id="peakDb" value="-3">
+    </div>
+
+    <div class="section">
+        <h3>Scanned Files Preview</h3>
+        <button id="scanBtn">Scan Folder</button>
+        <div id="fileList"></div>
+    </div>
+
+    <button id="processBtn">Process All Audio Files</button>
+    <div id="status"></div>
+
+    <script src="renderer.js"></script>
+</body>
+</html> 

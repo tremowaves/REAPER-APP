@@ -1,0 +1,28 @@
+# Dependencies
+/node_modules/
+/reaper-batch-ui/node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# REAPER Batch UI specific output
+/reaper-batch-ui/processed/
+/reaper-batch-ui/process_*.txt
+/reaper-batch-ui/process_*.txt.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# electron-builder output
+/dist/
+/release/ 
