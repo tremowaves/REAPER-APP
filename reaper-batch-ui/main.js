@@ -226,7 +226,9 @@ async function parseRppForPresets(filePath) {
       const fxChainContent = fxChainChunk.substring(0, fxChainEndIndex + 1);
       
       // Only include presets that actually have plugins in them
-      if (!fxChainContent.includes('<FX ')) {
+      // Updated to detect VST, AU, and JS plugins as well as native FX
+      const hasPlugins = /<(FX |VST |AU |JS )/i.test(fxChainContent);
+      if (!hasPlugins) {
         continue;
       }
 
@@ -335,19 +337,20 @@ async function processAudioFilesSmart(config) {
 }
 
 async function processFileGroup(files, preset, outputSettings, outputDir) {
-  const processFileName = `process_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`;
-  const processFilePath = path.join(__dirname, processFileName);
-  
-  try {
-    await fs.mkdir(outputDir, { recursive: true });
+  const processFilePath = path.join(app.getPath('temp'), `process_config_${Date.now()}.txt`);
 
-    // Create process.txt content
-    let processContent = files.join('\n') + '\n';
-    
+  try {
+    let processContent = '';
+    // Add file list
+    for (const file of files) {
+      processContent += `"${file}"\n`;
+    }
+
+    // Add REAPER command block
     processContent += '<CONFIG\n';
     processContent += `FXCHAIN "${preset}"\n`;
     processContent += `OUTPATH "${outputDir}"\n`;
-    
+
     // Add output format settings
     if (outputSettings.format === 'mp3') {
       processContent += 'OUTFORMAT MP3\n';
@@ -356,27 +359,27 @@ async function processFileGroup(files, preset, outputSettings, outputDir) {
     } else {
       processContent += 'OUTFORMAT WAV\n';
     }
-    
+
     // Add normalization settings
     if (outputSettings.normalize) {
       processContent += `NORMALIZE 1\n`;
       processContent += `NORMALIZETO ${outputSettings.peakDb}\n`;
     }
-    
+
     // Add fade settings (if supported by REAPER)
     if (outputSettings.autoFade) {
       processContent += 'FADEIN 0.1\n';
       processContent += 'FADEOUT 0.1\n';
     }
-    
+
     processContent += '>\n';
-    
+
     // Write process file
     await fs.writeFile(processFilePath, processContent);
-    
+
     // Execute REAPER command with full path
     const reaperCmd = `"${reaperPath}" -batchconvert "${processFilePath}"`;
-    
+
     await new Promise((resolve, reject) => {
       exec(reaperCmd, (error, stdout, stderr) => {
         if (error) {
@@ -386,7 +389,7 @@ async function processFileGroup(files, preset, outputSettings, outputDir) {
         resolve(stdout);
       });
     });
-    
+
   } finally {
     // Clean up temporary process file
     try {
@@ -401,4 +404,4 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
-}); 
+});
